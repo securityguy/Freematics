@@ -78,7 +78,8 @@
 * Networking configurations
 **************************************/
 #ifndef ENABLE_WIFI
-#define ENABLE_WIFI 1
+//#define ENABLE_WIFI 1
+#define ENABLE_WIFI 0
 // WiFi settings
 #define WIFI_SSID ""
 #define WIFI_PASSWORD ""
@@ -86,9 +87,9 @@
 
 #ifndef SERVER_HOST
 // cellular network settings
-#define CELL_APN ""
+#define CELL_APN "simbase"
 // Freematics Hub server settings
-#define SERVER_HOST "hub.freematics.com"
+#define SERVER_HOST "178.156.222.4"
 #define SERVER_PROTOCOL PROTOCOL_UDP
 #endif
 
@@ -103,7 +104,8 @@
 #if !SERVER_PORT
 #undef SERVER_PORT
 #if SERVER_PROTOCOL == PROTOCOL_UDP
-#define SERVER_PORT 8081
+//#define SERVER_PORT 8081
+#define SERVER_PORT 5170
 #else
 #define SERVER_PORT 443
 #endif
@@ -114,21 +116,39 @@
 #define WIFI_MESH_CHANNEL 13
 
 // WiFi AP settings
-#define WIFI_AP_SSID "TELELOGGER"
-#define WIFI_AP_PASSWORD "PASSWORD"
+#define WIFI_AP_SSID "BRT-T1"
+#define WIFI_AP_PASSWORD "code666brown"
+
+// Controls how long (in seconds) the vehicle must be motionless before stepping down
+// to a slower data rate. Each value pairs with the corresponding DATA_INTERVAL_TABLE
+// entry. Once all thresholds are exceeded, the device enters standby mode.
+// Example: {60, 600, 1800} = stay at tier-1 rate for 60s, tier-2 for 10min, tier-3
+// for 30min, then standby.
+#define STATIONARY_TIME_TABLE {60, 600, 1800} /* seconds */
+//#define STATIONARY_TIME_TABLE {10, 60, 180} /* developer original */
+
+// Sets the data transmission interval for each motion tier, paired with
+// STATIONARY_TIME_TABLE. Tier 1 (moving), tier 2 (recently stopped), tier 3 (parked).
+// Example: {15, 60, 300} = every 15s while moving, every 60s when briefly
+// stopped, every 5min when parked with engine on.
+#define DATA_INTERVAL_TABLE {15, 60, 300} /* seconds */
+//#define DATA_INTERVAL_TABLE {1, 2, 5} /* developer original */
+
+// While in standby (engine off, OBD unavailable), the device wakes periodically,
+// transmits one position packet, then returns to sleep. This controls that interval.
+// Increase to reduce data usage during long parking periods.
+#define PING_BACK_INTERVAL 3600 /* seconds */
+//#define PING_BACK_INTERVAL 900 /* developer original */
 
 // maximum consecutive communication errors before resetting network
 #define MAX_CONN_ERRORS_RECONNECT 5
-// maximum allowed connecting time
+// maximum allowed connected time
 #define MAX_CONN_TIME 10000 /* ms */
 // data receiving timeout
 #define DATA_RECEIVING_TIMEOUT 5000 /* ms */
 // expected maximum server sync signal interval
 #define SERVER_SYNC_INTERVAL 120 /* seconds, 0 to disable */
-// data interval settings
-#define STATIONARY_TIME_TABLE {10, 60, 180} /* seconds */
-#define DATA_INTERVAL_TABLE {1000, 2000, 5000} /* ms */
-#define PING_BACK_INTERVAL 900 /* seconds */
+// how often to check signal strength
 #define SIGNAL_CHECK_INTERVAL 10 /* seconds */
 
 /**************************************

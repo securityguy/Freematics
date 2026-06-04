@@ -101,7 +101,7 @@ uint32_t timeoutsNet = 0;
 uint32_t lastStatsTime = 0;
 
 int32_t syncInterval = SERVER_SYNC_INTERVAL * 1000;
-int32_t dataInterval = 1000;
+int32_t dataInterval = 1;
 
 #if STORAGE != STORAGE_NONE
 int fileid = 0;
@@ -769,9 +769,9 @@ void process()
   dataInterval = dataIntervals[0];
 #endif
   do {
-    long t = dataInterval - (millis() - startTime);
+    long t = dataInterval * 1000 - (millis() - startTime);
     processBLE(t > 0 ? t : 0);
-  } while (millis() - startTime < dataInterval);
+  } while (millis() - startTime < dataInterval * 1000);
 }
 
 bool initCell(bool quick = false)
