@@ -74,6 +74,18 @@
 // maximum consecutive OBD access errors before entering standby
 #define MAX_OBD_ERRORS 3
 
+// Encode ignition state into the RPM PID (0x10C) so it can be used as a reliable
+// ignition indicator (e.g. by Traccar via "rpm > 0"):
+//   1 = engine auto-stop (ECU alive, RPM 0) is reported as RPM 1, and ignition
+//       OFF (ECU not responding) is reported as RPM 0. rpm >= 1 means ON.
+//   0 = original behavior (raw RPM only; nothing sent when ECU is off).
+#define RPM_IGNITION_INDICATOR 1
+
+// When RPM_IGNITION_INDICATOR is enabled, the number of ignition-off (RPM 0)
+// reports to transmit after the ECU stops responding before the device enters
+// standby. Ensures the server is promptly notified that the ignition is off.
+#define IGNITION_OFF_REPORTS 3
+
 /**************************************
 * Networking configurations
 **************************************/
