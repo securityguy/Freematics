@@ -149,8 +149,13 @@
 // While in standby (engine off, OBD unavailable), the device wakes periodically,
 // transmits one position packet, then returns to sleep. This controls that interval.
 // Increase to reduce data usage during long parking periods.
-#define PING_BACK_INTERVAL 3600 /* seconds */
+#define PING_BACK_INTERVAL 1800 /* seconds */
 //#define PING_BACK_INTERVAL 900 /* developer original */
+
+// While parked, GNSS is powered up at each wake to obtain a fix for the standby
+// report. This bounds how long to wait for a fix before sending the report with
+// an invalid position (temperature is still reported).
+#define STANDBY_GPS_TIMEOUT 90 /* seconds */
 
 // maximum consecutive communication errors before resetting network
 #define MAX_CONN_ERRORS_RECONNECT 5
@@ -215,7 +220,12 @@
 
 // enable(1)/disable(0) BLE SPP server (for Freematics Controller App).
 #ifndef ENABLE_BLE
-#define ENABLE_BLE 1
+#define ENABLE_BLE 0
+#endif
+
+// set to 1 to silence the buzzer entirely (no connection beeps or any other sound)
+#ifndef SILENT
+#define SILENT 0
 #endif
 
 
