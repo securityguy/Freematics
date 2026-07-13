@@ -711,21 +711,23 @@ void process()
     Serial.println("[OBD] ECU ON");
   }
 #if RPM_IGNITION_INDICATOR
-  static int ignitionOffReports = 0;
+  static uint32_t ignitionOffTime = 0;
   if (!state.check(STATE_OBD_READY)) {
-    if (ignitionOffReports >= IGNITION_OFF_REPORTS) {
-      // Enough ignition-off reports sent; let the device enter standby.
+    // ECU not responding: ignition is OFF. Keep running full reports (with GNSS and
+    // network still up) for STANDBY_DELAY so the parked location and temperature are
+    // captured accurately, then enter low-power standby.
+    if (ignitionOffTime == 0) ignitionOffTime = millis();
+    if (millis() - ignitionOffTime >= STANDBY_DELAY * 1000UL) {
       Serial.println("[OBD] Ignition off, entering standby");
       state.clear(STATE_WORKING);
       return;
     }
-    // ECU not responding: ignition is OFF. Emit RPM 0 as an explicit ignition-off
-    // marker so the server sees rpm == 0 rather than just an absence of data.
+    // Emit RPM 0 as an explicit ignition-off marker so the server sees rpm == 0
+    // rather than just an absence of data.
     int rpmOff = 0;
     buffer->add((uint16_t)PID_RPM | 0x100, ELEMENT_INT32, &rpmOff, sizeof(rpmOff));
-    ignitionOffReports++;
   } else {
-    ignitionOffReports = 0;
+    ignitionOffTime = 0;
   }
 #endif
 #endif

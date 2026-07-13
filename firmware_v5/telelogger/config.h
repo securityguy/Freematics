@@ -81,10 +81,12 @@
 //   0 = original behavior (raw RPM only; nothing sent when ECU is off).
 #define RPM_IGNITION_INDICATOR 1
 
-// When RPM_IGNITION_INDICATOR is enabled, the number of ignition-off (RPM 0)
-// reports to transmit after the ECU stops responding before the device enters
-// standby. Ensures the server is promptly notified that the ignition is off.
-#define IGNITION_OFF_REPORTS 3
+// When RPM_IGNITION_INDICATOR is enabled, how long (seconds) to keep running full
+// reports (location, battery, temperature, RPM 0) after the ECU stops responding
+// before the device enters low-power standby. Keeping GNSS/network alive for a
+// while captures an accurate parked location (a cold GNSS start after standby is
+// slow/unreliable) and keeps reporting temperature right after parking.
+#define STANDBY_DELAY 600 /* seconds */
 
 /**************************************
 * Networking configurations
