@@ -74,11 +74,26 @@
 // maximum consecutive OBD access errors before entering standby
 #define MAX_OBD_ERRORS 3
 
+// Encode ignition state into the RPM PID (0x10C) so it can be used as a reliable
+// ignition indicator (e.g. by Traccar via "rpm > 0"):
+//   1 = engine auto-stop (ECU alive, RPM 0) is reported as RPM 1, and ignition
+//       OFF (ECU not responding) is reported as RPM 0. rpm >= 1 means ON.
+//   0 = original behavior (raw RPM only; nothing sent when ECU is off).
+#define RPM_IGNITION_INDICATOR 1
+
+// When RPM_IGNITION_INDICATOR is enabled, how long (seconds) to keep running full
+// reports (location, battery, temperature, RPM 0) after the ECU stops responding
+// before the device enters low-power standby. Keeping GNSS/network alive for a
+// while captures an accurate parked location (a cold GNSS start after standby is
+// slow/unreliable) and keeps reporting temperature right after parking.
+#define STANDBY_DELAY 600 /* seconds */
+
 /**************************************
 * Networking configurations
 **************************************/
 #ifndef ENABLE_WIFI
-#define ENABLE_WIFI 1
+//#define ENABLE_WIFI 1
+#define ENABLE_WIFI 0
 // WiFi settings
 #define WIFI_SSID ""
 #define WIFI_PASSWORD ""
@@ -86,9 +101,9 @@
 
 #ifndef SERVER_HOST
 // cellular network settings
-#define CELL_APN ""
+#define CELL_APN "simbase"
 // Freematics Hub server settings
-#define SERVER_HOST "hub.freematics.com"
+#define SERVER_HOST "178.156.222.4"
 #define SERVER_PROTOCOL PROTOCOL_UDP
 #endif
 
@@ -103,7 +118,8 @@
 #if !SERVER_PORT
 #undef SERVER_PORT
 #if SERVER_PROTOCOL == PROTOCOL_UDP
-#define SERVER_PORT 8081
+//#define SERVER_PORT 8081
+#define SERVER_PORT 5170
 #else
 #define SERVER_PORT 443
 #endif
@@ -114,21 +130,44 @@
 #define WIFI_MESH_CHANNEL 13
 
 // WiFi AP settings
-#define WIFI_AP_SSID "TELELOGGER"
-#define WIFI_AP_PASSWORD "PASSWORD"
+#define WIFI_AP_SSID "BRT-T1"
+#define WIFI_AP_PASSWORD "code666brown"
+
+// Controls how long (in seconds) the vehicle must be motionless before stepping down
+// to a slower data rate. Each value pairs with the corresponding DATA_INTERVAL_TABLE
+// entry. Once all thresholds are exceeded, the device enters standby mode.
+// Example: {60, 600, 1800} = stay at tier-1 rate for 60s, tier-2 for 10min, tier-3
+// for 30min, then standby.
+#define STATIONARY_TIME_TABLE {60, 600, 1800} /* seconds */
+//#define STATIONARY_TIME_TABLE {10, 60, 180} /* developer original */
+
+// Sets the data transmission interval for each motion tier, paired with
+// STATIONARY_TIME_TABLE. Tier 1 (moving), tier 2 (recently stopped), tier 3 (parked).
+// Example: {15, 60, 300} = every 15s while moving, every 60s when briefly
+// stopped, every 5min when parked with engine on.
+#define DATA_INTERVAL_TABLE {15, 60, 300} /* seconds */
+//#define DATA_INTERVAL_TABLE {1, 2, 5} /* developer original */
+
+// While in standby (engine off, OBD unavailable), the device wakes periodically,
+// transmits one position packet, then returns to sleep. This controls that interval.
+// Increase to reduce data usage during long parking periods.
+#define PING_BACK_INTERVAL 1800 /* seconds */
+//#define PING_BACK_INTERVAL 900 /* developer original */
+
+// While parked, GNSS is powered up at each wake to obtain a fix for the standby
+// report. This bounds how long to wait for a fix before sending the report with
+// an invalid position (temperature is still reported).
+#define STANDBY_GPS_TIMEOUT 90 /* seconds */
 
 // maximum consecutive communication errors before resetting network
 #define MAX_CONN_ERRORS_RECONNECT 5
-// maximum allowed connecting time
+// maximum allowed connected time
 #define MAX_CONN_TIME 10000 /* ms */
 // data receiving timeout
 #define DATA_RECEIVING_TIMEOUT 5000 /* ms */
 // expected maximum server sync signal interval
 #define SERVER_SYNC_INTERVAL 120 /* seconds, 0 to disable */
-// data interval settings
-#define STATIONARY_TIME_TABLE {10, 60, 180} /* seconds */
-#define DATA_INTERVAL_TABLE {1000, 2000, 5000} /* ms */
-#define PING_BACK_INTERVAL 900 /* seconds */
+// how often to check signal strength
 #define SIGNAL_CHECK_INTERVAL 10 /* seconds */
 
 /**************************************
@@ -183,7 +222,12 @@
 
 // enable(1)/disable(0) BLE SPP server (for Freematics Controller App).
 #ifndef ENABLE_BLE
-#define ENABLE_BLE 1
+#define ENABLE_BLE 0
+#endif
+
+// set to 1 to silence the buzzer entirely (no connection beeps or any other sound)
+#ifndef SILENT
+#define SILENT 0
 #endif
 
 

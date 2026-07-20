@@ -49,6 +49,7 @@ typedef struct {
   uint32_t ts;
 } PID_POLLING_INFO;
 
+#define MAX_POLLING_TIER 3
 PID_POLLING_INFO obdData[]= {
   {PID_SPEED, 1},
   {PID_RPM, 1},
@@ -72,6 +73,7 @@ float mag[3] = {0};
 uint8_t accCount = 0;
 #endif
 int deviceTemp = 0;
+int deviceTempX10 = 0; // temperature in 0.1 degC, as PID_DEVICE_TEMP is transmitted (Traccar divides by 10)
 
 // config data
 char apn[32];
@@ -101,7 +103,7 @@ uint32_t timeoutsNet = 0;
 uint32_t lastStatsTime = 0;
 
 int32_t syncInterval = SERVER_SYNC_INTERVAL * 1000;
-int32_t dataInterval = 1000;
+int32_t dataInterval = 1;
 
 #if STORAGE != STORAGE_NONE
 int fileid = 0;
@@ -171,11 +173,15 @@ void printTimeoutStats()
 
 void beep(int duration)
 {
-    // turn on buzzer at 2000Hz frequency 
+#if SILENT
+    (void)duration; // buzzer silenced via SILENT config
+#else
+    // turn on buzzer at 2000Hz frequency
     sys.buzzer(2000);
     delay(duration);
     // turn off buzzer
     sys.buzzer(0);
+#endif
 }
 
 #if LOG_EXT_SENSORS
@@ -235,30 +241,51 @@ int handlerLiveData(UrlHandlerParam* param)
 #if ENABLE_OBD
 void processOBD(CBuffer* buffer)
 {
-  static int idx[2] = {0, 0};
-  int tier = 1;
-  for (byte i = 0; i < sizeof(obdData) / sizeof(obdData[0]); i++) {
-    if (obdData[i].tier > tier) {
-        // reset previous tier index
-        idx[tier - 2] = 0;
-        // keep new tier number
-        tier = obdData[i].tier;
-        // move up current tier index
-        i += idx[tier - 2]++;
-        // check if into next tier
-        if (obdData[i].tier != tier) {
-            idx[tier - 2]= 0;
-            i--;
-            continue;
-        }
+  // per-tier round-robin offsets (tier 2..MAX_POLLING_TIER); bounds-safe (upstream PR #148)
+  static int tierCache[MAX_POLLING_TIER - 1] = {};
+
+  uint8_t tier = 1;
+  uint8_t obdCount = sizeof(obdData) / sizeof(obdData[0]);
+
+  for (uint8_t idx = 0; idx < obdCount; idx++) {
+    if (obdData[idx].tier > tier) {
+      // reset previous tier index
+      if (tier > 1) {
+        tierCache[tier - 2] = 0;
+      }
+
+      // keep new tier number
+      tier = obdData[idx].tier;
+
+      // move up current tier index
+      idx += tierCache[tier - 2]++;
+
+      // check if into next tier
+      if (idx == obdCount - 1) {
+        tierCache[tier - 2] = 0;
+      }
+      else if (obdData[idx].tier != tier) {
+        tierCache[tier - 2] = 0;
+        idx--;
+        continue;
+      }
     }
-    byte pid = obdData[i].pid;
+
+    uint8_t pid = obdData[idx].pid;
     if (!obd.isValidPID(pid)) continue;
     int value;
     if (obd.readPID(pid, value)) {
-        obdData[i].ts = millis();
-        obdData[i].value = value;
-        buffer->add((uint16_t)pid | 0x100, ELEMENT_INT32, &value, sizeof(value));
+        obdData[idx].ts = millis();
+        obdData[idx].value = value;
+        int outValue = value;
+#if RPM_IGNITION_INDICATOR
+        // Encode ignition state into RPM: a responding ECU means ignition is ON,
+        // even during engine auto-stop (RPM truly 0). Remap that 0 to 1 so that
+        // rpm >= 1 always indicates ignition ON, distinct from the ignition-OFF
+        // marker (RPM 0) emitted when the ECU stops responding.
+        if (pid == PID_RPM && outValue == 0) outValue = 1;
+#endif
+        buffer->add((uint16_t)pid | 0x100, ELEMENT_INT32, &outValue, sizeof(outValue));
     } else {
         timeoutsOBD++;
         printTimeoutStats();
@@ -394,6 +421,7 @@ void processMEMS(CBuffer* buffer)
   if (!mems->read(acc, gyr, mag, &temp)) return;
 #endif
   deviceTemp = (int)temp;
+  deviceTempX10 = (int)(temp * 10); // preserve MEMS 0.1 degC resolution
 
   accSum[0] += acc[0];
   accSum[1] += acc[1];
@@ -614,7 +642,10 @@ bool waitMotion(long timeout)
       // calculate relative movement
       float motion = 0;
       float acc[3];
-      if (!mems->read(acc)) continue;
+      float temp;
+      // also read temperature so the standby report has a current value
+      if (!mems->read(acc, 0, 0, &temp)) continue;
+      deviceTempX10 = (int)(temp * 10);
       if (accCount == 10) {
         accCount = 0;
         accSum[0] = 0;
@@ -665,14 +696,40 @@ void process()
     if (obd.errors >= MAX_OBD_ERRORS) {
       if (!obd.init()) {
         Serial.println("[OBD] ECU OFF");
+#if RPM_IGNITION_INDICATOR
+        // Keep working a few more cycles so an ignition-off (RPM 0) report is
+        // built and transmitted before going to standby.
+        state.clear(STATE_OBD_READY);
+#else
         state.clear(STATE_OBD_READY | STATE_WORKING);
         return;
+#endif
       }
     }
   } else if (obd.init(PROTO_AUTO, true)) {
     state.set(STATE_OBD_READY);
     Serial.println("[OBD] ECU ON");
   }
+#if RPM_IGNITION_INDICATOR
+  static uint32_t ignitionOffTime = 0;
+  if (!state.check(STATE_OBD_READY)) {
+    // ECU not responding: ignition is OFF. Keep running full reports (with GNSS and
+    // network still up) for STANDBY_DELAY so the parked location and temperature are
+    // captured accurately, then enter low-power standby.
+    if (ignitionOffTime == 0) ignitionOffTime = millis();
+    if (millis() - ignitionOffTime >= STANDBY_DELAY * 1000UL) {
+      Serial.println("[OBD] Ignition off, entering standby");
+      state.clear(STATE_WORKING);
+      return;
+    }
+    // Emit RPM 0 as an explicit ignition-off marker so the server sees rpm == 0
+    // rather than just an absence of data.
+    int rpmOff = 0;
+    buffer->add((uint16_t)PID_RPM | 0x100, ELEMENT_INT32, &rpmOff, sizeof(rpmOff));
+  } else {
+    ignitionOffTime = 0;
+  }
+#endif
 #endif
 
   if (rssi != rssiLast) {
@@ -717,8 +774,10 @@ void process()
 
   if (!state.check(STATE_MEMS_READY)) {
     deviceTemp = readChipTemperature();
+    deviceTempX10 = deviceTemp * 10;
   }
-  buffer->add(PID_DEVICE_TEMP, ELEMENT_INT32, &deviceTemp, sizeof(deviceTemp));
+  // Traccar's freematics decoder divides PID_DEVICE_TEMP by 10, so send tenths of degC
+  buffer->add(PID_DEVICE_TEMP, ELEMENT_INT32, &deviceTempX10, sizeof(deviceTempX10));
 
   buffer->timestamp = millis();
   buffer->state = BUFFER_STATE_FILLED;
@@ -769,9 +828,9 @@ void process()
   dataInterval = dataIntervals[0];
 #endif
   do {
-    long t = dataInterval - (millis() - startTime);
+    long t = dataInterval * 1000 - (millis() - startTime);
     processBLE(t > 0 ? t : 0);
-  } while (millis() - startTime < dataInterval);
+  } while (millis() - startTime < dataInterval * 1000);
 }
 
 bool initCell(bool quick = false)
@@ -849,6 +908,71 @@ bool initCell(bool quick = false)
   return state.check(STATE_CELL_CONNECTED);
 }
 
+// Build and transmit a report while the vehicle is parked (engine off): the
+// current temperature, a GPS fix if one can be acquired within STANDBY_GPS_TIMEOUT
+// (otherwise an invalid-position report), and RPM 0 as an explicit ignition-off
+// marker when RPM_IGNITION_INDICATOR is enabled. The UDP socket must already be
+// open (ping() opens it) before this is called.
+void sendStandbyReport(CStorageRAM& store)
+{
+  CBuffer* buffer = bufman.getFree();
+  if (!buffer) return;
+  buffer->state = BUFFER_STATE_FILLING;
+
+#if GNSS == GNSS_STANDALONE
+  // GNSS is powered down during standby unless GNSS_ALWAYS_ON; bring it up for a fix
+  bool gpsStarted = false;
+  if (!state.check(STATE_GPS_READY) && initGPS()) {
+    state.set(STATE_GPS_READY);
+    gpsStarted = true;
+  }
+#endif
+  uint32_t t = millis();
+  while (state.check(STATE_STANDBY) && (millis() - t) < STANDBY_GPS_TIMEOUT * 1000UL) {
+    if (processGPS(buffer)) break; // fix acquired; GPS PIDs added to buffer
+    delay(1000);
+  }
+#if GNSS == GNSS_STANDALONE
+  if (gpsStarted) {
+    sys.gpsEnd(true);
+    state.clear(STATE_GPS_READY | STATE_GPS_ONLINE);
+    gd = 0;
+  }
+#endif
+
+#if RPM_IGNITION_INDICATOR
+  // ignition is off while parked; keep the server seeing rpm == 0
+  int rpmOff = 0;
+  buffer->add((uint16_t)PID_RPM | 0x100, ELEMENT_INT32, &rpmOff, sizeof(rpmOff));
+#endif
+#if ENABLE_OBD
+  // battery voltage - useful for spotting drain while parked
+  if (sys.devType > 12) {
+    batteryVoltage = (float)(analogRead(A0) * 45) / 4095;
+  } else {
+    batteryVoltage = obd.getVoltage();
+  }
+  if (batteryVoltage) {
+    uint16_t v = batteryVoltage * 100;
+    buffer->add(PID_BATTERY_VOLTAGE, ELEMENT_UINT16, &v, sizeof(v));
+  }
+#endif
+  buffer->add(PID_DEVICE_TEMP, ELEMENT_INT32, &deviceTempX10, sizeof(deviceTempX10));
+  buffer->timestamp = millis();
+  buffer->state = BUFFER_STATE_FILLED;
+
+#if SERVER_PROTOCOL == PROTOCOL_UDP
+  store.header(devid);
+#endif
+  store.timestamp(buffer->timestamp);
+  buffer->serialize(store);
+  bufman.free(buffer);
+  store.tailer();
+  Serial.print("[STBY] ");
+  Serial.println(store.buffer());
+  teleClient.transmit(store.buffer(), store.length());
+}
+
 /*******************************************************************************
   Initializing network, maintaining connection and doing transmissions
 *******************************************************************************/
@@ -893,14 +1017,14 @@ void telemetry(void* inst)
         }
         if (teleClient.wifi.setup()) {
           Serial.println("[WIFI] Ping...");
-          teleClient.ping();
+          if (teleClient.ping()) sendStandbyReport(store);
         }
         else
 #endif
         {
           if (initCell()) {
             Serial.println("[CELL] Ping...");
-            teleClient.ping();
+            if (teleClient.ping()) sendStandbyReport(store);
           }
         }
         teleClient.shutdown();
