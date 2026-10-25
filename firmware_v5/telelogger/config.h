@@ -79,7 +79,25 @@
 //   1 = engine auto-stop (ECU alive, RPM 0) is reported as RPM 1, and ignition
 //       OFF (ECU not responding) is reported as RPM 0. rpm >= 1 means ON.
 //   0 = original behavior (raw RPM only; nothing sent when ECU is off).
+// ECU-alive alone is not enough: opening a door often wakes the body computer
+// and OBD gateway with RPM 0. Ignition-ON is latched only after consecutive
+// RPM readings at idle-or-above. Battery voltage is never used for this.
 #define RPM_IGNITION_INDICATOR 1
+
+// Real-engine threshold and consecutive samples required to latch ignition ON.
+// F-150 idle is ~600; door-wake is 0. A single junk reading of 1 must not latch.
+#define IGNITION_CONFIRM_RPM 400
+#define IGNITION_CONFIRM_SAMPLES 2
+
+// After a confirmed trip, keep sending rpm >= 1 this long (seconds) if the ECU
+// drops out, so auto-stop PID timeouts do not look like ignition off. After the
+// hold, send rpm 0 (trip end) but keep the latch until standby() so a return to
+// auto-stop with RPM 0 still remaps to 1.
+#define IGNITION_HOLD_SECONDS 30
+
+// After wake, if the engine is never confirmed, leave WORKING and enter standby.
+// Prevents a door-slam MEMS wake with a live BCM from sitting in a full session.
+#define FALSE_WAKE_SECONDS 90
 
 // When RPM_IGNITION_INDICATOR is enabled, how long (seconds) to keep running full
 // reports (location, battery, temperature, RPM 0) after the ECU stops responding
@@ -227,7 +245,7 @@
 
 // set to 1 to silence the buzzer entirely (no connection beeps or any other sound)
 #ifndef SILENT
-#define SILENT 0
+#define SILENT 1
 #endif
 
 

@@ -74,6 +74,12 @@ uint8_t accCount = 0;
 #endif
 int deviceTemp = 0;
 int deviceTempX10 = 0; // temperature in 0.1 degC, as PID_DEVICE_TEMP is transmitted (Traccar divides by 10)
+#if RPM_IGNITION_INDICATOR
+// Latched after consecutive idle-or-above RPM reads. Cleared only in standby().
+// Door-open / accessory bus wake answers OBD but must not look like ignition ON.
+bool engineConfirmed = false;
+uint8_t rpmConfirmCount = 0;
+#endif
 
 // config data
 char apn[32];
@@ -170,6 +176,23 @@ void printTimeoutStats()
   Serial.print(" Network:");
   Serial.println(timeoutsNet);
 }
+
+#if SILENT
+void silenceBuzzer()
+{
+#ifdef PIN_BUZZER
+    sys.buzzer(0);
+    // ESP32 Arduino 3.x renamed ledcDetachPin → ledcDetach; PlatformIO still uses 2.x.
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    ledcDetach(PIN_BUZZER);
+#else
+    ledcDetachPin(PIN_BUZZER);
+#endif
+    pinMode(PIN_BUZZER, OUTPUT);
+    digitalWrite(PIN_BUZZER, LOW);
+#endif
+}
+#endif
 
 void beep(int duration)
 {
@@ -279,11 +302,27 @@ void processOBD(CBuffer* buffer)
         obdData[idx].value = value;
         int outValue = value;
 #if RPM_IGNITION_INDICATOR
-        // Encode ignition state into RPM: a responding ECU means ignition is ON,
-        // even during engine auto-stop (RPM truly 0). Remap that 0 to 1 so that
-        // rpm >= 1 always indicates ignition ON, distinct from the ignition-OFF
-        // marker (RPM 0) emitted when the ECU stops responding.
-        if (pid == PID_RPM && outValue == 0) outValue = 1;
+        // Latch ignition only after consecutive RPM reads at idle-or-above.
+        // Until then keep rpm == 0 on the wire (door-open BCM wake). After the
+        // latch, send raw RPM when >= threshold and remap auto-stop 0 to 1.
+        if (pid == PID_RPM) {
+            if (outValue >= IGNITION_CONFIRM_RPM) {
+                if (!engineConfirmed) {
+                    if (rpmConfirmCount < IGNITION_CONFIRM_SAMPLES) rpmConfirmCount++;
+                    if (rpmConfirmCount >= IGNITION_CONFIRM_SAMPLES) {
+                        engineConfirmed = true;
+                        Serial.println("[OBD] Engine confirmed (RPM)");
+                    } else {
+                        outValue = 0;
+                    }
+                }
+            } else if (!engineConfirmed) {
+                rpmConfirmCount = 0;
+                outValue = 0;
+            } else {
+                outValue = 1;
+            }
+        }
 #endif
         buffer->add((uint16_t)pid | 0x100, ELEMENT_INT32, &outValue, sizeof(outValue));
     } else {
@@ -364,7 +403,12 @@ bool processGPS(CBuffer* buffer)
   lastGPSLng = gd->lng;
 
   float kph = gd->speed * 1.852f;
+#if RPM_IGNITION_INDICATOR
+  // Parked GNSS jitter at 2 km/h must not reset the stationary clock.
+  if (engineConfirmed && kph >= 8) lastMotionTime = millis();
+#else
   if (kph >= 2) lastMotionTime = millis();
+#endif
 
   if (buffer) {
     buffer->add(PID_GPS_TIME, ELEMENT_UINT32, &gd->time, sizeof(uint32_t));
@@ -712,22 +756,34 @@ void process()
   }
 #if RPM_IGNITION_INDICATOR
   static uint32_t ignitionOffTime = 0;
+  static uint32_t falseWakeTime = 0;
   if (!state.check(STATE_OBD_READY)) {
-    // ECU not responding: ignition is OFF. Keep running full reports (with GNSS and
-    // network still up) for STANDBY_DELAY so the parked location and temperature are
-    // captured accurately, then enter low-power standby.
+    // ECU not responding. Do not clear engineConfirmed here — a short auto-stop
+    // PID dropout must not forget the trip. Hold rpm >= 1 for
+    // IGNITION_HOLD_SECONDS, then send 0 (trip end) and linger for STANDBY_DELAY.
     if (ignitionOffTime == 0) ignitionOffTime = millis();
     if (millis() - ignitionOffTime >= STANDBY_DELAY * 1000UL) {
       Serial.println("[OBD] Ignition off, entering standby");
       state.clear(STATE_WORKING);
       return;
     }
-    // Emit RPM 0 as an explicit ignition-off marker so the server sees rpm == 0
-    // rather than just an absence of data.
-    int rpmOff = 0;
-    buffer->add((uint16_t)PID_RPM | 0x100, ELEMENT_INT32, &rpmOff, sizeof(rpmOff));
+    int rpmOut = 0;
+    if (engineConfirmed && (millis() - ignitionOffTime < IGNITION_HOLD_SECONDS * 1000UL)) {
+      rpmOut = 1;
+    }
+    buffer->add((uint16_t)PID_RPM | 0x100, ELEMENT_INT32, &rpmOut, sizeof(rpmOut));
   } else {
     ignitionOffTime = 0;
+  }
+  if (!engineConfirmed) {
+    if (falseWakeTime == 0) falseWakeTime = millis();
+    if (millis() - falseWakeTime >= FALSE_WAKE_SECONDS * 1000UL) {
+      Serial.println("[OBD] False wake, entering standby");
+      state.clear(STATE_WORKING);
+      return;
+    }
+  } else {
+    falseWakeTime = 0;
   }
 #endif
 #endif
@@ -815,8 +871,12 @@ void process()
       break;
     }
   }
-  if (stationary) {
-    // stationery timeout
+  if (stationary
+#if RPM_IGNITION_INDICATOR
+      && !engineConfirmed
+#endif
+      ) {
+    // stationery timeout — not while the engine is confirmed running
     Serial.print("Stationary for ");
     Serial.print(motionless);
     Serial.println(" secs");
@@ -1211,6 +1271,10 @@ void standby()
 #endif
 
   state.clear(STATE_WORKING | STATE_OBD_READY | STATE_STORAGE_READY);
+#if RPM_IGNITION_INDICATOR
+  engineConfirmed = false;
+  rpmConfirmCount = 0;
+#endif
   // this will put co-processor into sleep mode
 #if ENABLE_OLED
   oled.print("STANDBY");
@@ -1538,6 +1602,9 @@ void setup()
   }
 #else
   sys.begin(false, true);
+#endif
+#if SILENT
+  silenceBuzzer();
 #endif
 
 #if ENABLE_MEMS
