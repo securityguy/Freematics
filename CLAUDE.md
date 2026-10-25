@@ -50,13 +50,18 @@ intermediate server/bridge. Traccar's built-in `freematics` protocol decoder par
 ## Building
 - It's a **PlatformIO** project (`platformio.ini`: `esp-wrover-kit`, `huge_app`,
   `BOARD_HAS_PSRAM` commented out). Use PlatformIO for real builds/flash.
-- `pio` is NOT installed locally; `arduino-cli` is, but its only generic ESP32 core is
-  **3.3.10, which is too new** for this code — it breaks pre-existing calls (`ledcAttachPin`
-  in `FreematicsPlus.cpp`, `esp_spiram_get_size` under `BOARD_HAS_PSRAM`). Neither is our code.
+- `pio` is installed (via the VS Code PlatformIO extension) at `~/.platformio/penv/bin/pio`
+  but is not on PATH. Its ESP32 framework is Arduino core 2.0.17, which this code targets.
+  Build/flash from `firmware_v5/telelogger`: `~/.platformio/penv/bin/pio run -t upload`.
+- `arduino-cli` is also installed, but its only generic ESP32 core is **3.x, which is too new**
+  for this code — it breaks pre-existing calls (`ledcAttachPin` in `FreematicsPlus.cpp`,
+  `esp_spiram_get_size` under `BOARD_HAS_PSRAM`). Neither is our code.
 - To sanity-check that `telelogger.ino` compiles, build with a no-PSRAM board and count
   sketch errors (0 = clean):
-  `arduino-cli compile --fqbn esp32:esp32:esp32 --libraries ../../libraries . 2>&1 | grep -c "telelogger.ino.*error:"`
+  `arduino-cli compile --fqbn esp32:esp32:esp32 --libraries ../../libraries --build-property "tools.ctags.pattern=true" . 2>&1 | grep -c "telelogger.ino.*error:"`
   The overall link will still fail on the library `ledcAttachPin` — that's expected here.
+  `tools.ctags.pattern=true` skips ctags: Arduino's ctags is x86_64-only and this Mac has no
+  Rosetta. The sketch is in definition-before-use order, so it needs no generated prototypes.
 - After firmware changes, always still flash + drive/park test on real hardware.
 
 ## Key config knobs (`firmware_v5/telelogger/config.h`)
